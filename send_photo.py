@@ -2,12 +2,15 @@ import json
 import os
 import random
 import sys
+import time
 from pathlib import Path
 
 import requests
 
 SENT_IDS_FILE = Path(__file__).parent / "sent_ids.json"
 MAX_HISTORY = 5000  # how many past IDs to remember before trimming
+PHOTOS_PER_RUN = 30
+SEND_DELAY_SECONDS = 1.2  # spacing between sends to stay under Telegram's rate limit
 
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
@@ -26,11 +29,11 @@ def save_sent_ids(ids: set) -> None:
     SENT_IDS_FILE.write_text(json.dumps(trimmed))
 
 
-def fetch_from_unsplash():
-    """Returns (unique_id, image_url, source_label, credit) or None."""
+def fetch_from_unsplash(count=30):
+    """Yields (unique_id, image_url, source_label, credit) tuples."""
     resp = requests.get(
         "https://api.unsplash.com/photos/random",
-        params={"count": 10},
+        params={"count": count},
         headers={"Authorization": f"Client-ID {UNSPLASH_ACCESS_KEY}"},
         timeout=15,
     )
@@ -46,12 +49,12 @@ def fetch_from_unsplash():
         )
 
 
-def fetch_from_pexels():
+def fetch_from_pexels(count=30):
     if not PEXELS_API_KEY:
         return
     resp = requests.get(
         "https://api.pexels.com/v1/curated",
-        params={"per_page": 15, "page": random.randint(1, 50)},
+        params={"per_page": count, "page": random.randint(1, 50)},
         headers={"Authorization": PEXELS_API_KEY},
         timeout=15,
     )
@@ -82,23 +85,40 @@ def send_to_telegram(image_url: str, caption: str) -> None:
 
 def main():
     sent_ids = load_sent_ids()
+    sent_this_run = 0
+    max_fetch_attempts = 6  # each Unsplash call returns up to 30, but many may be dupes
 
-    sources = [fetch_from_unsplash]
-    if PEXELS_API_KEY:
-        sources.append(fetch_from_pexels)
-    random.shuffle(sources)
+    for attempt in range(max_fetch_attempts):
+        if sent_this_run >= PHOTOS_PER_RUN:
+            break
 
-    for source_fn in sources:
-        for uid, url, source_label, credit in source_fn():
-            if uid in sent_ids:
-                continue
-            send_to_telegram(url, f"{source_label} | عکاس: {credit}")
-            sent_ids.add(uid)
-            save_sent_ids(sent_ids)
-            print(f"sent {uid}")
-            return
+        sources = [fetch_from_unsplash]
+        if PEXELS_API_KEY:
+            sources.append(fetch_from_pexels)
+        random.shuffle(sources)
 
-    print("no new unique photo found this run", file=sys.stderr)
+        for source_fn in sources:
+            for uid, url, source_label, credit in source_fn():
+                if sent_this_run >= PHOTOS_PER_RUN:
+                    break
+                if uid in sent_ids:
+                    continue
+                try:
+                    send_to_telegram(url, f"{source_label} | عکاس: {credit}")
+                except requests.HTTPError as e:
+                    print(f"failed to send {uid}: {e}", file=sys.stderr)
+                    continue
+                sent_ids.add(uid)
+                sent_this_run += 1
+                save_sent_ids(sent_ids)
+                print(f"sent {uid} ({sent_this_run}/{PHOTOS_PER_RUN})")
+                time.sleep(SEND_DELAY_SECONDS)
+
+    if sent_this_run < PHOTOS_PER_RUN:
+        print(
+            f"only found {sent_this_run}/{PHOTOS_PER_RUN} unique photos this run",
+            file=sys.stderr,
+        )
 
 
 if __name__ == "__main__":
