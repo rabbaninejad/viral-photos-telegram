@@ -9,7 +9,7 @@ import requests
 
 SENT_IDS_FILE = Path(__file__).parent / "sent_ids.json"
 MAX_HISTORY = 5000  # how many past IDs to remember before trimming
-PHOTOS_PER_RUN = 30
+PHOTOS_PER_RUN = 100
 SEND_DELAY_SECONDS = 1.2  # spacing between sends to stay under Telegram's rate limit
 
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -86,7 +86,7 @@ def send_to_telegram(image_url: str, caption: str) -> None:
 def main():
     sent_ids = load_sent_ids()
     sent_this_run = 0
-    max_fetch_attempts = 6  # each Unsplash call returns up to 30, but many may be dupes
+    max_fetch_attempts = 12  # each Unsplash call returns up to 30, but many may be dupes
 
     for attempt in range(max_fetch_attempts):
         if sent_this_run >= PHOTOS_PER_RUN:
