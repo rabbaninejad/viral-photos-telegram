@@ -92,9 +92,13 @@ def get_video_details(video_ids):
     return resp.json().get("items", [])
 
 
+def sanitize_text(text: str) -> str:
+    return text.encode("utf-16", "surrogatepass").decode("utf-16", "ignore")
+
+
 def send_link_to_telegram(video_id: str, title: str, views: str) -> None:
     url = f"https://youtu.be/{video_id}"
-    text = f"{title}\n\ud83d\udc41 {views} views\n{url}"
+    text = sanitize_text(f"{title}\n\ud83d\udc41 {views} views\n{url}")
     resp = requests.post(
         f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
         data={"chat_id": TELEGRAM_CHAT_ID, "text": text},
