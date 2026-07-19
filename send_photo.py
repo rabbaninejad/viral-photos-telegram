@@ -47,8 +47,30 @@ def save_sent_ids(ids: set) -> None:
     SENT_IDS_FILE.write_text(json.dumps(trimmed))
 
 
+def translate_to_fa(text: str) -> str:
+    if not text:
+        return ""
+    try:
+        resp = requests.get(
+            "https://translate.googleapis.com/translate_a/single",
+            params={
+                "client": "gtx",
+                "sl": "en",
+                "tl": "fa",
+                "dt": "t",
+                "q": text,
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        segments = resp.json()[0]
+        return "".join(seg[0] for seg in segments if seg[0])
+    except Exception as e:
+        print(f"translation failed: {e}", file=sys.stderr)
+        return ""
+
+
 def fetch_from_unsplash(query: str, page: int, count: int = 30):
-    """Returns a list of candidate dicts sorted by nothing yet (caller sorts by popularity)."""
     resp = requests.get(
         "https://api.unsplash.com/search/photos",
         params={"query": query, "per_page": count, "page": page, "order_by": "relevant"},
@@ -109,8 +131,14 @@ def build_caption(c: dict) -> str:
     lines = [f"{c['source_label']} | عکاس: {c['credit']}"]
     if c.get("description"):
         lines.append(f"🖼 {c['description']}")
+        fa_desc = translate_to_fa(c["description"])
+        if fa_desc:
+            lines.append(f"🇮🇷 {fa_desc}")
     if c.get("location"):
         lines.append(f"📍 {c['location']}")
+        fa_loc = translate_to_fa(c["location"])
+        if fa_loc and fa_loc.strip().lower() != c["location"].strip().lower():
+            lines.append(f"📍(فارسی) {fa_loc}")
     return "\n".join(lines)
 
 
@@ -151,7 +179,6 @@ def main():
         if len(all_candidates) >= PHOTOS_PER_RUN * 3:
             break
 
-    # Send the most popular (highest-liked) unsent photos first
     all_candidates.sort(key=lambda c: c["popularity"], reverse=True)
 
     sent_this_run = 0

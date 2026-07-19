@@ -45,6 +45,23 @@ def is_direct_image(url: str) -> bool:
     return url.lower().endswith(IMAGE_EXTENSIONS)
 
 
+def translate_to_fa(text: str) -> str:
+    if not text:
+        return ""
+    try:
+        resp = requests.get(
+            "https://translate.googleapis.com/translate_a/single",
+            params={"client": "gtx", "sl": "en", "tl": "fa", "dt": "t", "q": text},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        segments = resp.json()[0]
+        return "".join(seg[0] for seg in segments if seg[0])
+    except Exception as e:
+        print(f"translation failed: {e}", file=sys.stderr)
+        return ""
+
+
 def fetch_top_of_day(subreddit: str):
     resp = requests.get(
         f"https://www.reddit.com/r/{subreddit}/top.json",
@@ -74,11 +91,13 @@ def fetch_top_of_day(subreddit: str):
 
 
 def send_to_telegram(post: dict) -> None:
-    caption = (
-        f"{post['title']}\n"
-        f"r/{post['subreddit']} | 💬 {post['num_comments']} کامنت\n"
-        f"{post['permalink']}"
-    )
+    fa_title = translate_to_fa(post["title"])
+    lines = [post["title"]]
+    if fa_title:
+        lines.append(f"🇮🇷 {fa_title}")
+    lines.append(f"r/{post['subreddit']} | 💬 {post['num_comments']} کامنت")
+    lines.append(post["permalink"])
+    caption = "\n".join(lines)
     resp = requests.post(
         f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
         data={"chat_id": TELEGRAM_CHAT_ID, "photo": post["url"], "caption": caption},

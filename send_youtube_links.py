@@ -57,6 +57,27 @@ def save_sent_ids(ids: set) -> None:
     SENT_IDS_FILE.write_text(json.dumps(trimmed))
 
 
+def sanitize_text(text: str) -> str:
+    return text.encode("utf-16", "surrogatepass").decode("utf-16", "ignore")
+
+
+def translate_to_fa(text: str) -> str:
+    if not text:
+        return ""
+    try:
+        resp = requests.get(
+            "https://translate.googleapis.com/translate_a/single",
+            params={"client": "gtx", "sl": "en", "tl": "fa", "dt": "t", "q": text},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        segments = resp.json()[0]
+        return "".join(seg[0] for seg in segments if seg[0])
+    except Exception as e:
+        print(f"translation failed: {e}", file=sys.stderr)
+        return ""
+
+
 def search_candidates(query: str):
     resp = requests.get(
         "https://www.googleapis.com/youtube/v3/search",
@@ -64,7 +85,7 @@ def search_candidates(query: str):
             "part": "snippet",
             "q": query,
             "type": "video",
-            "videoDuration": "short",  # YouTube's own bucket: under 4 minutes
+            "videoDuration": "short",
             "order": "viewCount",
             "maxResults": 25,
             "key": YOUTUBE_API_KEY,
@@ -92,13 +113,15 @@ def get_video_details(video_ids):
     return resp.json().get("items", [])
 
 
-def sanitize_text(text: str) -> str:
-    return text.encode("utf-16", "surrogatepass").decode("utf-16", "ignore")
-
-
 def send_link_to_telegram(video_id: str, title: str, views: str) -> None:
     url = f"https://youtu.be/{video_id}"
-    text = sanitize_text(f"{title}\n\ud83d\udc41 {views} views\n{url}")
+    fa_title = translate_to_fa(title)
+    lines = [title]
+    if fa_title:
+        lines.append(f"🇮🇷 {fa_title}")
+    lines.append(f"👁 {views} views")
+    lines.append(url)
+    text = sanitize_text("\n".join(lines))
     resp = requests.post(
         f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
         data={"chat_id": TELEGRAM_CHAT_ID, "text": text},
