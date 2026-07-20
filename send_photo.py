@@ -8,9 +8,10 @@ from pathlib import Path
 import requests
 
 SENT_IDS_FILE = Path(__file__).parent / "sent_ids.json"
-MAX_HISTORY = 5000  # how many past IDs to remember before trimming
+MAX_HISTORY = 8000  # how many past IDs to remember before trimming
 PHOTOS_PER_RUN = 100
 SEND_DELAY_SECONDS = 1.2  # spacing between sends to stay under Telegram's rate limit
+MAX_CAPTION_LEN = 1000  # Telegram's hard cap is 1024 chars
 
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
@@ -32,6 +33,16 @@ TOPIC_QUERIES = [
     "lake",
     "wilderness",
     "national park",
+    "glacier",
+    "volcano",
+    "jungle",
+    "coastline cliffs",
+    "autumn forest",
+    "snow mountains",
+    "cave",
+    "safari animals",
+    "tropical island",
+    "northern lights",
 ]
 
 
@@ -110,7 +121,10 @@ def build_caption(c: dict) -> str:
         fa_loc = translate_to_fa(c["location"])
         if fa_loc and fa_loc.strip().lower() != c["location"].strip().lower():
             lines.append(f"📍(فارسی) {fa_loc}")
-    return "\n".join(lines)
+    caption = "\n".join(lines)
+    if len(caption) > MAX_CAPTION_LEN:
+        caption = caption[: MAX_CAPTION_LEN - 1] + "…"
+    return caption
 
 
 def send_to_telegram(image_url: str, caption: str) -> None:
@@ -135,20 +149,27 @@ def main():
     all_candidates = []
     seen_uids = set()
     for query in queries:
-        for page in (1, 2):
+        # Random pages so repeat runs don't keep re-fetching the same
+        # deterministic "relevant" results that are already marked sent.
+        pages = random.sample(range(1, 15), 3)
+        for page in pages:
             try:
                 batch = fetch_from_unsplash(query, page)
             except requests.HTTPError as e:
                 print(f"search failed for '{query}' page {page}: {e}", file=sys.stderr)
                 continue
+            new_count = 0
             for c in batch:
                 if c["uid"] in sent_ids or c["uid"] in seen_uids:
                     continue
                 seen_uids.add(c["uid"])
                 all_candidates.append(c)
-        if len(all_candidates) >= PHOTOS_PER_RUN * 3:
+                new_count += 1
+            print(f"'{query}' page {page}: {new_count} new / {len(batch)} fetched")
+        if len(all_candidates) >= PHOTOS_PER_RUN * 2:
             break
 
+    print(f"total unique candidates collected: {len(all_candidates)}")
     all_candidates.sort(key=lambda c: c["popularity"], reverse=True)
 
     sent_this_run = 0
