@@ -27,7 +27,12 @@ SUBREDDITS = [
 ]
 
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif")
-HEADERS = {"User-Agent": "nature-comment-bot/1.0"}
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "application/json",
+    "Accept-Language": "en-US,en;q=0.9",
+}
 
 
 def load_sent_ids() -> set:
@@ -63,31 +68,44 @@ def translate_to_fa(text: str) -> str:
 
 
 def fetch_top_of_day(subreddit: str):
-    resp = requests.get(
+    urls = [
         f"https://www.reddit.com/r/{subreddit}/top.json",
-        params={"t": "day", "limit": 50},
-        headers=HEADERS,
-        timeout=15,
-    )
-    resp.raise_for_status()
-    children = resp.json().get("data", {}).get("children", [])
-    posts = []
-    for child in children:
-        d = child.get("data", {})
-        url = d.get("url_overridden_by_dest") or d.get("url", "")
-        if d.get("over_18") or not is_direct_image(url):
+        f"https://old.reddit.com/r/{subreddit}/top.json",
+    ]
+    last_error = None
+    for url in urls:
+        try:
+            resp = requests.get(
+                url,
+                params={"t": "day", "limit": 50},
+                headers=HEADERS,
+                timeout=15,
+            )
+            resp.raise_for_status()
+            children = resp.json().get("data", {}).get("children", [])
+            posts = []
+            for child in children:
+                d = child.get("data", {})
+                img_url = d.get("url_overridden_by_dest") or d.get("url", "")
+                if d.get("over_18") or not is_direct_image(img_url):
+                    continue
+                posts.append(
+                    {
+                        "uid": f"reddit:{d.get('id')}",
+                        "url": img_url,
+                        "title": d.get("title", "بدون عنوان"),
+                        "subreddit": subreddit,
+                        "num_comments": d.get("num_comments", 0),
+                        "permalink": f"https://reddit.com{d.get('permalink', '')}",
+                    }
+                )
+            return posts
+        except requests.HTTPError as e:
+            last_error = e
             continue
-        posts.append(
-            {
-                "uid": f"reddit:{d.get('id')}",
-                "url": url,
-                "title": d.get("title", "بدون عنوان"),
-                "subreddit": subreddit,
-                "num_comments": d.get("num_comments", 0),
-                "permalink": f"https://reddit.com{d.get('permalink', '')}",
-            }
-        )
-    return posts
+    if last_error:
+        raise last_error
+    return []
 
 
 def send_to_telegram(post: dict) -> None:
@@ -122,6 +140,7 @@ def main():
                 continue
             seen_uids.add(p["uid"])
             all_posts.append(p)
+        time.sleep(0.5)
 
     all_posts.sort(key=lambda p: p["num_comments"], reverse=True)
 
