@@ -5,11 +5,12 @@ on:
     - cron: "10,40 * * * *"
   workflow_dispatch: {}
 
+permissions:
+  contents: write
+
 jobs:
   send-commented:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
 
