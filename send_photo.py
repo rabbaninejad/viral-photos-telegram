@@ -18,6 +18,7 @@ TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 UNSPLASH_ACCESS_KEY = os.environ["UNSPLASH_ACCESS_KEY"]
 
 TOPIC_QUERIES = [
+    # nature / adventure
     "nature",
     "mountains",
     "canyon",
@@ -43,6 +44,26 @@ TOPIC_QUERIES = [
     "safari animals",
     "tropical island",
     "northern lights",
+    # technology
+    "technology",
+    "futuristic technology",
+    "robotics",
+    "space technology",
+    "gadgets",
+    # thrill / excitement
+    "extreme sports",
+    "adrenaline action sports",
+    "skydiving",
+    "base jumping",
+    "motocross action",
+    # newest vehicles / machinery / aircraft
+    "latest supercar",
+    "new fighter jet",
+    "heavy machinery",
+    "construction equipment",
+    "concept car",
+    "cargo airplane",
+    "industrial engineering",
 ]
 
 
