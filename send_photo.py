@@ -64,6 +64,27 @@ TOPIC_QUERIES = [
     "concept car",
     "cargo airplane",
     "industrial engineering",
+    # cars & motorcycles
+    "sports car",
+    "luxury car",
+    "classic car",
+    "sports motorcycle",
+    "motorcycle stunt",
+    "custom car",
+    # funny / humor
+    "funny photo",
+    "comedy moment",
+    "funny animal",
+    "silly expression",
+    # debate / reply-bait / instagram-worthy
+    "optical illusion",
+    "unbelievable moment photo",
+    "mind blowing photo",
+    "epic fail funny",
+    "satisfying oddly",
+    "controversial art",
+    "before and after transformation",
+    "rare unusual photo",
 ]
 
 
