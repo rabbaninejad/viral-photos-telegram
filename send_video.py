@@ -8,11 +8,11 @@ from pathlib import Path
 import requests
 
 SENT_IDS_FILE = Path(__file__).parent / "sent_video_ids.json"
-MAX_HISTORY = 5000
-VIDEOS_PER_RUN = 5
+MAX_HISTORY = 10000
+VIDEOS_PER_RUN = 100
 MIN_DURATION = 10
 MAX_DURATION = 30
-SEND_DELAY_SECONDS = 2.0
+SEND_DELAY_SECONDS = 1.5
 MAX_FILE_WIDTH = 1280  # keep file size reasonable for Telegram
 
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -50,24 +50,18 @@ def save_sent_ids(ids: set) -> None:
 
 
 def pick_video_file(video_files: list):
-    # Prefer the smallest file at or under MAX_FILE_WIDTH so it stays a
-    # reasonable size to send; fall back to the smallest available.
-    candidates = [f for f in video_files if f.get("width") and f["width"] <= MAX_FILE_WIDTH]
-    pool = candidates or video_files
-    if not pool:
+    # Only real video files (no gif/image previews), prefer the smallest
+    # file at or under MAX_FILE_WIDTH to keep upload size reasonable.
+    real_videos = [f for f in video_files if (f.get("file_type") or "").startswith("video/")]
+    real_videos = [f for f in real_videos if not f.get("link", "").lower().endswith(".gif")]
+    if not real_videos:
         return None
+    candidates = [f for f in real_videos if f.get("width") and f["width"] <= MAX_FILE_WIDTH]
+    pool = candidates or real_videos
     return min(pool, key=lambda f: f.get("width") or 999999)
 
 
-def fetch_candidates(query: str, page: int):
-    resp = requests.get(
-        "https://api.pexels.com/videos/search",
-        params={"query": query, "per_page": 20, "page": page},
-        headers={"Authorization": PEXELS_API_KEY},
-        timeout=20,
-    )
-    resp.raise_for_status()
-    videos = resp.json().get("videos", [])
+def extract_candidates(videos: list):
     candidates = []
     for v in videos:
         duration = v.get("duration", 0)
@@ -85,6 +79,28 @@ def fetch_candidates(query: str, page: int):
             }
         )
     return candidates
+
+
+def fetch_popular(page: int):
+    resp = requests.get(
+        "https://api.pexels.com/videos/popular",
+        params={"per_page": 80, "page": page},
+        headers={"Authorization": PEXELS_API_KEY},
+        timeout=20,
+    )
+    resp.raise_for_status()
+    return extract_candidates(resp.json().get("videos", []))
+
+
+def fetch_search(query: str, page: int):
+    resp = requests.get(
+        "https://api.pexels.com/videos/search",
+        params={"query": query, "per_page": 30, "page": page},
+        headers={"Authorization": PEXELS_API_KEY},
+        timeout=20,
+    )
+    resp.raise_for_status()
+    return extract_candidates(resp.json().get("videos", []))
 
 
 def build_caption(c: dict) -> str:
@@ -107,16 +123,34 @@ def send_video_to_telegram(c: dict) -> None:
 
 def main():
     sent_ids = load_sent_ids()
-    queries = TOPIC_QUERIES[:]
-    random.shuffle(queries)
-
     all_candidates = []
     seen_uids = set()
+
+    # Pull from Pexels' own "popular" (trending) feed first — several pages.
+    for page in random.sample(range(1, 20), 6):
+        try:
+            batch = fetch_popular(page)
+        except requests.HTTPError as e:
+            print(f"popular fetch failed page {page}: {e}", file=sys.stderr)
+            continue
+        new_count = 0
+        for c in batch:
+            if c["uid"] in sent_ids or c["uid"] in seen_uids:
+                continue
+            seen_uids.add(c["uid"])
+            all_candidates.append(c)
+            new_count += 1
+        print(f"popular page {page}: {new_count} new / {len(batch)} fetched")
+
+    # Then top up with topic searches for variety.
+    queries = TOPIC_QUERIES[:]
+    random.shuffle(queries)
     for query in queries:
-        pages = random.sample(range(1, 10), 2)
-        for page in pages:
+        if len(all_candidates) >= VIDEOS_PER_RUN * 2:
+            break
+        for page in random.sample(range(1, 10), 2):
             try:
-                batch = fetch_candidates(query, page)
+                batch = fetch_search(query, page)
             except requests.HTTPError as e:
                 print(f"search failed for '{query}' page {page}: {e}", file=sys.stderr)
                 continue
@@ -128,11 +162,9 @@ def main():
                 all_candidates.append(c)
                 new_count += 1
             print(f"'{query}' page {page}: {new_count} new / {len(batch)} fetched")
-        if len(all_candidates) >= VIDEOS_PER_RUN * 3:
-            break
 
-    random.shuffle(all_candidates)
     print(f"total unique candidates collected: {len(all_candidates)}")
+    random.shuffle(all_candidates)
 
     sent_this_run = 0
     for c in all_candidates:
