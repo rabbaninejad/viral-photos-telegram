@@ -1,0 +1,21 @@
+name: Send Trending Clip to Telegram
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+
+jobs:
+  send-clip:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch trending clip
+        run: |
+          curl -s "https://api.example.com/trending-clips" | jq -r '.url' > clip_url.txt
+          wget -O clip.mp4 $(cat clip_url.txt)
+      - name: Send to Telegram
+        uses: appleboy/telegram-action@v1.0.0
+        with:
+          to: ${{ secrets.TELEGRAM_CHAT_ID }}
+          token: ${{ secrets.TELEGRAM_TOKEN }}
+          video: clip.mp4
+          caption: "کلیپ هیجانی ترند"
