@@ -50,14 +50,19 @@ def save_sent_ids(ids: set) -> None:
 
 
 def pick_video_file(video_files: list):
-    # Only real video files (no gif/image previews), prefer the smallest
-    # file at or under MAX_FILE_WIDTH to keep upload size reasonable.
+    # Only real video files (no gif/image previews), only story-shaped
+    # (portrait, height > width) variants, smallest that's still under
+    # MAX_FILE_WIDTH to keep upload size reasonable.
     real_videos = [f for f in video_files if (f.get("file_type") or "").startswith("video/")]
     real_videos = [f for f in real_videos if not f.get("link", "").lower().endswith(".gif")]
-    if not real_videos:
+    portrait_videos = [
+        f for f in real_videos
+        if f.get("width") and f.get("height") and f["height"] > f["width"]
+    ]
+    if not portrait_videos:
         return None
-    candidates = [f for f in real_videos if f.get("width") and f["width"] <= MAX_FILE_WIDTH]
-    pool = candidates or real_videos
+    candidates = [f for f in portrait_videos if f.get("width") and f["width"] <= MAX_FILE_WIDTH]
+    pool = candidates or portrait_videos
     return min(pool, key=lambda f: f.get("width") or 999999)
 
 
@@ -84,7 +89,7 @@ def extract_candidates(videos: list):
 def fetch_popular(page: int):
     resp = requests.get(
         "https://api.pexels.com/videos/popular",
-        params={"per_page": 80, "page": page},
+        params={"per_page": 80, "page": page, "orientation": "portrait"},
         headers={"Authorization": PEXELS_API_KEY},
         timeout=20,
     )
@@ -95,7 +100,7 @@ def fetch_popular(page: int):
 def fetch_search(query: str, page: int):
     resp = requests.get(
         "https://api.pexels.com/videos/search",
-        params={"query": query, "per_page": 30, "page": page},
+        params={"query": query, "per_page": 30, "page": page, "orientation": "portrait"},
         headers={"Authorization": PEXELS_API_KEY},
         timeout=20,
     )
