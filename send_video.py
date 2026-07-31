@@ -1,7 +1,9 @@
 import json
 import os
 import random
+import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -10,48 +12,60 @@ import requests
 SENT_IDS_FILE = Path(__file__).parent / "sent_video_ids.json"
 MAX_HISTORY = 20000
 VIDEOS_PER_RUN = 30
-SEND_DELAY_SECONDS = 1.2
+SEND_DELAY_SECONDS = 0.8
 MAX_CAPTION_LEN = 1000
 MAX_DURATION_SECONDS = 30
-MAX_FILE_SIZE_BYTES = 4 * 1024 * 1024  # 4MB cap
+TARGET_MAX_BYTES = int(3.8 * 1024 * 1024)  # stay under the 4MB cap after re-encode
+OUT_WIDTH = 720
+OUT_HEIGHT = 1280
 
 TELEGRAM_BOT_TOKEN = os.environ["WOLF_BOT_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["WOLF_CHAT_ID"]
-PEXELS_API_KEY = os.environ["PEXELS_API_KEY"]
-PIXABAY_API_KEY = os.environ.get("PIXABAY_API_KEY")
+PEXELS_API_KEY = os.environ.get("PEXELS_API_KEY")
+PIXABAY_API_KEY = os.environ["PIXABAY_API_KEY"]
 
-# tight to nature / adventure / canyoneering / rock-climbing / adrenaline moments only
 TOPIC_QUERIES = [
-    "canyoneering waterfall rappelling",
-    "cliff jumping ocean extreme",
-    "extreme rock climbing cliff",
-    "free solo climbing exposure",
-    "skydiving freefall extreme",
-    "base jumping cliff extreme",
-    "wingsuit flying close terrain",
-    "paragliding mountain extreme",
-    "big wave surfing wipeout",
-    "whitewater rafting rapids extreme",
-    "avalanche snow extreme",
-    "lightning storm dramatic",
-    "volcano eruption lava close",
-    "shark close encounter ocean",
-    "crocodile alligator wild action",
-    "bear wild encounter close",
-    "eagle hunting dive action",
-    "lion hunt chase wild",
-    "wingsuit proximity flying",
-    "ice climbing frozen waterfall",
-    "storm chasing tornado extreme",
-    "downhill mountain bike crash jump",
-    "freediving deep ocean extreme",
-    "cave diving underwater extreme",
-    "kitesurfing extreme jump",
-    "canyon extreme jump rope",
-    "mountain summit extreme exposure",
-    "extreme weather ocean storm",
-    "wild river extreme kayak",
-    "cliffside extreme sport action",
+    "canyoneering",
+    "waterfall rappelling",
+    "cliff jumping",
+    "extreme rock climbing",
+    "free solo climbing",
+    "skydiving",
+    "base jumping",
+    "wingsuit flying",
+    "paragliding mountains",
+    "big wave surfing",
+    "whitewater rafting",
+    "avalanche",
+    "lightning storm",
+    "volcano eruption",
+    "shark ocean",
+    "crocodile",
+    "bear wild",
+    "eagle hunting",
+    "lion wild",
+    "ice climbing",
+    "storm chasing",
+    "downhill mountain bike",
+    "freediving",
+    "cave diving",
+    "kitesurfing",
+    "cave exploration",
+    "glacier",
+    "jungle waterfall",
+    "canyon river",
+    "safari wild animals",
+    "mountain summit",
+    "sea cliffs",
+    "trekking wilderness",
+    "coral reef diving",
+    "forest waterfall",
+    "extreme sports",
+    "adventure travel",
+    "hiking mountains",
+    "rock climbing",
+    "northern lights",
+    "desert dunes",
 ]
 
 
@@ -83,109 +97,32 @@ def translate_to_fa(text: str) -> str:
         return ""
 
 
-# ---------- Pexels ----------
-
-def normalize_pexels(v: dict, query: str):
-    duration = v.get("duration", 9999)
-    width = v.get("width") or 0
-    height = v.get("height") or 0
-    if width and height and width >= height:
-        return None
-    files = []
-    for f in v.get("video_files", []):
-        if f.get("file_type") != "video/mp4":
-            continue
-        w, h = f.get("width", 0), f.get("height", 0)
-        if h <= w:
-            continue
-        link = f.get("link", "")
-        if not link or link.lower().split("?")[0].endswith(".gif"):
-            continue
-        files.append({"link": link, "width": w, "height": h})
-    if not files:
-        return None
-    return {
-        "uid": f"pexels:{v['id']}",
-        "source": "Pexels",
-        "duration": duration,
-        "credit": (v.get("user") or {}).get("name", "Pexels"),
-        "files": files,
-        "query": query,
-    }
-
-
-def fetch_pexels_search(query: str, page: int, count: int = 80):
-    resp = requests.get(
-        "https://api.pexels.com/videos/search",
-        params={
-            "query": query, "per_page": count, "page": page,
-            "orientation": "portrait", "size": "medium",
-            "max_duration": MAX_DURATION_SECONDS,
-        },
-        headers={"Authorization": PEXELS_API_KEY}, timeout=20,
-    )
-    resp.raise_for_status()
-    out = []
-    for v in resp.json().get("videos", []):
-        if v.get("duration", 9999) > MAX_DURATION_SECONDS:
-            continue
-        c = normalize_pexels(v, query)
-        if c:
-            out.append(c)
-    return out
-
-
-def fetch_pexels_popular(page: int, count: int = 80):
-    resp = requests.get(
-        "https://api.pexels.com/videos/popular",
-        params={"per_page": count, "page": page, "orientation": "portrait", "max_duration": MAX_DURATION_SECONDS},
-        headers={"Authorization": PEXELS_API_KEY}, timeout=20,
-    )
-    resp.raise_for_status()
-    out = []
-    for v in resp.json().get("videos", []):
-        if v.get("duration", 9999) > MAX_DURATION_SECONDS:
-            continue
-        c = normalize_pexels(v, "پرطرفدار")
-        if c:
-            out.append(c)
-    return out
-
-
-# ---------- Pixabay ----------
+# ---------- Pixabay (primary source) ----------
 
 def normalize_pixabay(v: dict, query: str):
     duration = v.get("duration", 9999)
-    files = []
-    for size_name in ("large", "medium", "small", "tiny"):
+    best = None
+    for size_name in ("medium", "large", "small", "tiny"):
         f = (v.get("videos") or {}).get(size_name)
-        if not f:
-            continue
-        w, h = f.get("width", 0), f.get("height", 0)
-        if not (h > w):
-            continue
-        link = f.get("url", "")
-        if not link or link.lower().split("?")[0].endswith(".gif"):
-            continue
-        files.append({"link": link, "width": w, "height": h})
-    if not files:
+        if f and f.get("url"):
+            best = f
+            break
+    if not best:
         return None
     return {
         "uid": f"pixabay:{v['id']}",
         "source": "Pixabay",
         "duration": duration,
         "credit": v.get("user", "Pixabay"),
-        "files": files,
+        "download_url": best["url"],
         "query": query,
     }
 
 
-def fetch_pixabay_search(query: str, page: int, count: int = 50, editors_choice: bool = False):
-    if not PIXABAY_API_KEY:
-        return []
+def fetch_pixabay_search(query: str, page: int, count: int = 60, editors_choice: bool = False, order: str = "popular"):
     params = {
         "key": PIXABAY_API_KEY, "q": query, "per_page": count, "page": page,
-        "video_type": "film", "safesearch": "true", "order": "popular",
+        "video_type": "film", "safesearch": "true", "order": order,
     }
     if editors_choice:
         params["editors_choice"] = "true"
@@ -201,50 +138,107 @@ def fetch_pixabay_search(query: str, page: int, count: int = 50, editors_choice:
     return out
 
 
-def pick_best_file(files: list):
-    ordered = sorted(files, key=lambda f: f["width"] * f["height"], reverse=True)
-    for f in ordered:
-        link = f["link"]
-        try:
-            head = requests.head(link, timeout=10, allow_redirects=True)
-            size = int(head.headers.get("Content-Length", 0))
-        except Exception:
-            size = 0
-        if size and size > MAX_FILE_SIZE_BYTES:
+# ---------- Pexels (secondary, supplements when Pixabay is short) ----------
+
+def normalize_pexels(v: dict, query: str):
+    duration = v.get("duration", 9999)
+    files = [f for f in v.get("video_files", []) if f.get("file_type") == "video/mp4" and f.get("link")]
+    if not files:
+        return None
+    files.sort(key=lambda f: (f.get("width") or 0) * (f.get("height") or 0), reverse=True)
+    mid = files[len(files) // 2]
+    return {
+        "uid": f"pexels:{v['id']}",
+        "source": "Pexels",
+        "duration": duration,
+        "credit": (v.get("user") or {}).get("name", "Pexels"),
+        "download_url": mid["link"],
+        "query": query,
+    }
+
+
+def fetch_pexels_search(query: str, page: int, count: int = 40):
+    if not PEXELS_API_KEY:
+        return []
+    resp = requests.get(
+        "https://api.pexels.com/videos/search",
+        params={"query": query, "per_page": count, "page": page, "max_duration": MAX_DURATION_SECONDS},
+        headers={"Authorization": PEXELS_API_KEY}, timeout=20,
+    )
+    resp.raise_for_status()
+    out = []
+    for v in resp.json().get("videos", []):
+        if v.get("duration", 9999) > MAX_DURATION_SECONDS:
             continue
-        return f, size
-    return None, 0
+        c = normalize_pexels(v, query)
+        if c:
+            out.append(c)
+    return out
+
+
+# ---------- download + crop-to-story + compress ----------
+
+def process_to_portrait(download_url: str, duration: float, workdir: str):
+    src_path = os.path.join(workdir, "src.mp4")
+    out_path = os.path.join(workdir, "out.mp4")
+
+    r = requests.get(download_url, timeout=60, stream=True)
+    r.raise_for_status()
+    with open(src_path, "wb") as f:
+        for chunk in r.iter_content(chunk_size=1 << 16):
+            f.write(chunk)
+
+    dur = max(1.0, min(duration or MAX_DURATION_SECONDS, MAX_DURATION_SECONDS))
+    audio_kbps = 64
+    video_kbps = max(300, int(((TARGET_MAX_BYTES * 8) / dur / 1000) - audio_kbps))
+
+    vf = f"crop=min(iw\\,ih*9/16):min(ih\\,iw*16/9),scale={OUT_WIDTH}:{OUT_HEIGHT}"
+    cmd = [
+        "ffmpeg", "-y", "-i", src_path, "-t", str(dur),
+        "-vf", vf,
+        "-c:v", "libx264", "-preset", "veryfast",
+        "-b:v", f"{video_kbps}k", "-maxrate", f"{int(video_kbps*1.2)}k", "-bufsize", f"{video_kbps*2}k",
+        "-c:a", "aac", "-b:a", f"{audio_kbps}k",
+        "-movflags", "+faststart",
+        out_path,
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+    if result.returncode != 0 or not os.path.exists(out_path):
+        print(f"ffmpeg failed: {result.stderr[-500:]}", file=sys.stderr)
+        return None, 0
+
+    size = os.path.getsize(out_path)
+    if size > TARGET_MAX_BYTES * 1.15:
+        return None, size
+    return out_path, size
 
 
 def build_caption(c: dict) -> str:
     lines = [f"{c['source']} | فیلمبردار: {c['credit']}", f"⏱ {c['duration']} ثانیه"]
-    if c["query"] != "پرطرفدار":
-        fa_query = translate_to_fa(c["query"])
-        if fa_query:
-            lines.append(f"🎬 {fa_query}")
-    else:
-        lines.append("🔥 پرطرفدار")
+    fa_query = translate_to_fa(c["query"])
+    if fa_query:
+        lines.append(f"🎬 {fa_query}")
     caption = "\n".join(lines)
     if len(caption) > MAX_CAPTION_LEN:
         caption = caption[: MAX_CAPTION_LEN - 1] + "…"
     return caption
 
 
-def send_to_telegram(video_url: str, caption: str, width: int, height: int, duration: int) -> None:
-    # sendVideo (not sendAnimation): keeps it a normal, real video -- never labeled/saved as .gif
-    resp = requests.post(
-        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVideo",
-        data={
-            "chat_id": TELEGRAM_CHAT_ID,
-            "video": video_url,
-            "caption": caption,
-            "width": width,
-            "height": height,
-            "duration": duration,
-            "supports_streaming": True,
-        },
-        timeout=60,
-    )
+def send_to_telegram(file_path: str, caption: str, duration: int) -> None:
+    with open(file_path, "rb") as fh:
+        resp = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVideo",
+            data={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "caption": caption,
+                "width": OUT_WIDTH,
+                "height": OUT_HEIGHT,
+                "duration": duration,
+                "supports_streaming": True,
+            },
+            files={"video": ("clip.mp4", fh, "video/mp4")},
+            timeout=120,
+        )
     resp.raise_for_status()
 
 
@@ -253,11 +247,29 @@ def main():
     seen_uids = set()
     all_candidates = []
 
-    for page in random.sample(range(1, 8), 2):
+    # Pixabay editors_choice pool -- curated high quality, small but reliable
+    for page in (1, 2):
         try:
-            batch = fetch_pexels_popular(page)
+            batch = fetch_pixabay_search("nature adventure", page, editors_choice=True)
         except requests.HTTPError as e:
-            print(f"pexels popular page {page} failed: {e}", file=sys.stderr)
+            print(f"pixabay editors_choice page {page} failed: {e}", file=sys.stderr)
+            batch = []
+        for c in batch:
+            if c["uid"] in sent_ids or c["uid"] in seen_uids:
+                continue
+            seen_uids.add(c["uid"])
+            all_candidates.append(c)
+    print(f"pixabay editors_choice pool: {len(all_candidates)}")
+
+    # Pixabay topic search -- the main pool (this is what was asked for)
+    queries = TOPIC_QUERIES[:]
+    random.shuffle(queries)
+    for query in queries:
+        page = random.randint(1, 6)
+        try:
+            batch = fetch_pixabay_search(query, page)
+        except requests.HTTPError as e:
+            print(f"pixabay search '{query}' page {page} failed: {e}", file=sys.stderr)
             batch = []
         new_count = 0
         for c in batch:
@@ -266,14 +278,16 @@ def main():
             seen_uids.add(c["uid"])
             all_candidates.append(c)
             new_count += 1
-        print(f"pexels popular page {page}: {new_count} new / {len(batch)} fetched")
+        print(f"pixabay '{query}' page {page}: {new_count} new / {len(batch)} fetched")
 
-    if PIXABAY_API_KEY:
-        for page in random.sample(range(1, 5), 2):
+    # Pexels as a supplement only if Pixabay didn't give enough
+    if len(all_candidates) < VIDEOS_PER_RUN * 3 and PEXELS_API_KEY:
+        for query in queries[:15]:
+            page = random.randint(1, 4)
             try:
-                batch = fetch_pixabay_search("nature adventure extreme", page, editors_choice=True)
+                batch = fetch_pexels_search(query, page)
             except requests.HTTPError as e:
-                print(f"pixabay editors_choice page {page} failed: {e}", file=sys.stderr)
+                print(f"pexels search '{query}' page {page} failed: {e}", file=sys.stderr)
                 batch = []
             new_count = 0
             for c in batch:
@@ -282,66 +296,33 @@ def main():
                 seen_uids.add(c["uid"])
                 all_candidates.append(c)
                 new_count += 1
-            print(f"pixabay editors_choice page {page}: {new_count} new / {len(batch)} fetched")
+            print(f"pexels '{query}' page {page}: {new_count} new / {len(batch)} fetched")
 
-    queries = TOPIC_QUERIES[:]
-    random.shuffle(queries)
-
-    for query in queries:
-        if len(all_candidates) >= VIDEOS_PER_RUN * 4:
-            break
-        page = random.randint(1, 4)
-        try:
-            batch = fetch_pexels_search(query, page)
-        except requests.HTTPError as e:
-            print(f"pexels search '{query}' page {page} failed: {e}", file=sys.stderr)
-            batch = []
-        new_count = 0
-        for c in batch:
-            if c["uid"] in sent_ids or c["uid"] in seen_uids:
-                continue
-            seen_uids.add(c["uid"])
-            all_candidates.append(c)
-            new_count += 1
-        print(f"pexels '{query}' page {page}: {new_count} new / {len(batch)} fetched")
-
-        if PIXABAY_API_KEY:
-            try:
-                pbatch = fetch_pixabay_search(query, random.randint(1, 3))
-            except requests.HTTPError as e:
-                print(f"pixabay search '{query}' failed: {e}", file=sys.stderr)
-                pbatch = []
-            new_count2 = 0
-            for c in pbatch:
-                if c["uid"] in sent_ids or c["uid"] in seen_uids:
-                    continue
-                seen_uids.add(c["uid"])
-                all_candidates.append(c)
-                new_count2 += 1
-            print(f"pixabay '{query}': {new_count2} new / {len(pbatch)} fetched")
-
-    if not PIXABAY_API_KEY:
-        print("PIXABAY_API_KEY not set", file=sys.stderr)
-
-    print(f"total unique portrait candidates collected: {len(all_candidates)}")
+    print(f"total unique candidates collected: {len(all_candidates)}")
     random.shuffle(all_candidates)
 
     sent_this_run = 0
     for c in all_candidates:
         if sent_this_run >= VIDEOS_PER_RUN:
             break
-        best_file, size = pick_best_file(c["files"])
-        if not best_file:
-            continue
-        try:
-            send_to_telegram(best_file["link"], build_caption(c), best_file["width"], best_file["height"], c["duration"])
-        except requests.HTTPError as e:
-            print(f"failed to send {c['uid']}: {e}", file=sys.stderr)
-            continue
+        with tempfile.TemporaryDirectory() as workdir:
+            try:
+                out_path, size = process_to_portrait(c["download_url"], c["duration"], workdir)
+            except Exception as e:
+                print(f"processing failed for {c['uid']}: {e}", file=sys.stderr)
+                continue
+            if not out_path:
+                print(f"skip {c['uid']}: could not fit under size cap", file=sys.stderr)
+                continue
+            try:
+                send_to_telegram(out_path, build_caption(c), int(min(c["duration"], MAX_DURATION_SECONDS)))
+            except requests.HTTPError as e:
+                print(f"failed to send {c['uid']}: {e}", file=sys.stderr)
+                continue
         sent_ids.add(c["uid"])
         sent_this_run += 1
         save_sent_ids(sent_ids)
-        mb = size / 1024 / 1024 if size else 0
+        mb = size / 1024 / 1024
         print(f"sent {c['uid']} ({sent_this_run}/{VIDEOS_PER_RUN}) ~{mb:.1f}MB")
         time.sleep(SEND_DELAY_SECONDS)
 
