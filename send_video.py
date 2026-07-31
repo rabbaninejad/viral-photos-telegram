@@ -8,15 +8,15 @@ from pathlib import Path
 import requests
 
 SENT_IDS_FILE = Path(__file__).parent / "sent_video_ids.json"
-MAX_HISTORY = 4000
-VIDEOS_PER_RUN = 6
-SEND_DELAY_SECONDS = 2.0
+MAX_HISTORY = 12000
+VIDEOS_PER_RUN = 18  # target well above the required minimum of 15
+SEND_DELAY_SECONDS = 1.5
 MAX_CAPTION_LEN = 1000
 MAX_DURATION_SECONDS = 30
 MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024  # Telegram's cap for sending by URL
 
-TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
+TELEGRAM_BOT_TOKEN = os.environ["WOLF_BOT_TOKEN"]
+TELEGRAM_CHAT_ID = os.environ["WOLF_CHAT_ID"]
 PEXELS_API_KEY = os.environ["PEXELS_API_KEY"]
 
 TOPIC_QUERIES = [
@@ -50,6 +50,23 @@ TOPIC_QUERIES = [
     "space rocket launch",
     "formula 1 racing",
     "wingsuit flying",
+    "shark ocean",
+    "storm chasing",
+    "parkour freerunning",
+    "bmx tricks",
+    "drift racing",
+    "helicopter aerial",
+    "sailing storm",
+    "bull riding",
+    "downhill mountain bike",
+    "ice climbing",
+    "hot air balloon",
+    "tornado",
+    "underwater cave diving",
+    "kitesurfing",
+    "cave exploration",
+    "night city drone",
+    "roller coaster pov",
 ]
 
 
@@ -81,12 +98,61 @@ def translate_to_fa(text: str) -> str:
         return ""
 
 
+def normalize_video(v: dict, query: str) -> dict:
+    duration = v.get("duration", 9999)
+    return {
+        "uid": f"pexels:{v['id']}",
+        "duration": duration,
+        "credit": (v.get("user") or {}).get("name", "Pexels"),
+        "video_files": v.get("video_files", []),
+        "query": query,
+    }
+
+
+def fetch_from_pexels_search(query: str, page: int, count: int = 80):
+    resp = requests.get(
+        "https://api.pexels.com/videos/search",
+        params={
+            "query": query,
+            "per_page": count,
+            "page": page,
+            "size": "medium",
+            "max_duration": MAX_DURATION_SECONDS,
+        },
+        headers={"Authorization": PEXELS_API_KEY},
+        timeout=20,
+    )
+    resp.raise_for_status()
+    results = resp.json().get("videos", [])
+    out = []
+    for v in results:
+        if v.get("duration", 9999) > MAX_DURATION_SECONDS:
+            continue
+        out.append(normalize_video(v, query))
+    return out
+
+
+def fetch_popular(page: int, count: int = 80):
+    """Pexels' own curated/trending pool -- closest free proxy for 'viral right now'."""
+    resp = requests.get(
+        "https://api.pexels.com/videos/popular",
+        params={"per_page": count, "page": page, "max_duration": MAX_DURATION_SECONDS},
+        headers={"Authorization": PEXELS_API_KEY},
+        timeout=20,
+    )
+    resp.raise_for_status()
+    results = resp.json().get("videos", [])
+    out = []
+    for v in results:
+        if v.get("duration", 9999) > MAX_DURATION_SECONDS:
+            continue
+        out.append(normalize_video(v, "پرطرفدار"))
+    return out
+
+
 def pick_best_file(video_files: list):
-    """Pick the highest-quality file that should still fit Telegram's 20MB URL cap."""
     candidates = [f for f in video_files if f.get("file_type") == "video/mp4"]
-    # sort by resolution descending, try largest first, fall back smaller
     candidates.sort(key=lambda f: (f.get("width") or 0) * (f.get("height") or 0), reverse=True)
-    # prefer files capped at 1280 width to keep size reasonable, but keep full list as fallback
     preferred = [f for f in candidates if (f.get("width") or 0) <= 1280]
     ordered = preferred + [f for f in candidates if f not in preferred]
     for f in ordered:
@@ -104,43 +170,14 @@ def pick_best_file(video_files: list):
     return None, 0
 
 
-def fetch_from_pexels(query: str, page: int, count: int = 15):
-    resp = requests.get(
-        "https://api.pexels.com/videos/search",
-        params={
-            "query": query,
-            "per_page": count,
-            "page": page,
-            "size": "medium",
-            "max_duration": MAX_DURATION_SECONDS,
-        },
-        headers={"Authorization": PEXELS_API_KEY},
-        timeout=20,
-    )
-    resp.raise_for_status()
-    results = resp.json().get("videos", [])
-    candidates = []
-    for v in results:
-        duration = v.get("duration", 9999)
-        if duration > MAX_DURATION_SECONDS:
-            continue
-        candidates.append(
-            {
-                "uid": f"pexels:{v['id']}",
-                "duration": duration,
-                "credit": (v.get("user") or {}).get("name", "Pexels"),
-                "video_files": v.get("video_files", []),
-                "query": query,
-            }
-        )
-    return candidates
-
-
 def build_caption(c: dict) -> str:
     lines = [f"Pexels | فیلمبردار: {c['credit']}", f"⏱ {c['duration']} ثانیه"]
-    fa_query = translate_to_fa(c["query"])
-    if fa_query:
-        lines.append(f"🎬 {fa_query}")
+    if c["query"] != "پرطرفدار":
+        fa_query = translate_to_fa(c["query"])
+        if fa_query:
+            lines.append(f"🎬 {fa_query}")
+    else:
+        lines.append("🔥 پرطرفدار")
     caption = "\n".join(lines)
     if len(caption) > MAX_CAPTION_LEN:
         caption = caption[: MAX_CAPTION_LEN - 1] + "…"
@@ -165,30 +202,45 @@ def send_to_telegram(video_url: str, caption: str, width: int, height: int, dura
 
 def main():
     sent_ids = load_sent_ids()
+    seen_uids = set()
+    all_candidates = []
 
+    # 1) popular/trending pool first -- best proxy for "viral today"
+    for page in random.sample(range(1, 8), 2):
+        try:
+            batch = fetch_popular(page)
+        except requests.HTTPError as e:
+            print(f"popular fetch failed page {page}: {e}", file=sys.stderr)
+            batch = []
+        new_count = 0
+        for c in batch:
+            if c["uid"] in sent_ids or c["uid"] in seen_uids:
+                continue
+            seen_uids.add(c["uid"])
+            all_candidates.append(c)
+            new_count += 1
+        print(f"popular page {page}: {new_count} new / {len(batch)} fetched")
+
+    # 2) topical search pool to fill the rest and add variety
     queries = TOPIC_QUERIES[:]
     random.shuffle(queries)
-
-    all_candidates = []
-    seen_uids = set()
     for query in queries:
-        pages = random.sample(range(1, 6), 2)
-        for page in pages:
-            try:
-                batch = fetch_from_pexels(query, page)
-            except requests.HTTPError as e:
-                print(f"search failed for '{query}' page {page}: {e}", file=sys.stderr)
-                continue
-            new_count = 0
-            for c in batch:
-                if c["uid"] in sent_ids or c["uid"] in seen_uids:
-                    continue
-                seen_uids.add(c["uid"])
-                all_candidates.append(c)
-                new_count += 1
-            print(f"'{query}' page {page}: {new_count} new / {len(batch)} fetched")
-        if len(all_candidates) >= VIDEOS_PER_RUN * 4:
+        if len(all_candidates) >= VIDEOS_PER_RUN * 3:
             break
+        page = random.randint(1, 5)
+        try:
+            batch = fetch_from_pexels_search(query, page)
+        except requests.HTTPError as e:
+            print(f"search failed for '{query}' page {page}: {e}", file=sys.stderr)
+            continue
+        new_count = 0
+        for c in batch:
+            if c["uid"] in sent_ids or c["uid"] in seen_uids:
+                continue
+            seen_uids.add(c["uid"])
+            all_candidates.append(c)
+            new_count += 1
+        print(f"'{query}' page {page}: {new_count} new / {len(batch)} fetched")
 
     print(f"total unique candidates collected: {len(all_candidates)}")
     random.shuffle(all_candidates)
@@ -218,8 +270,8 @@ def main():
         print(f"sent {c['uid']} ({sent_this_run}/{VIDEOS_PER_RUN}) ~{mb:.1f}MB")
         time.sleep(SEND_DELAY_SECONDS)
 
-    if sent_this_run < VIDEOS_PER_RUN:
-        print(f"only found {sent_this_run}/{VIDEOS_PER_RUN} unique clips this run", file=sys.stderr)
+    if sent_this_run < 15:
+        print(f"WARNING: only sent {sent_this_run}/15 minimum required this run", file=sys.stderr)
 
 
 if __name__ == "__main__":
