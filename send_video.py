@@ -15,7 +15,7 @@ VIDEOS_PER_RUN = 30
 SEND_DELAY_SECONDS = 0.8
 MAX_CAPTION_LEN = 1000
 MAX_DURATION_SECONDS = 30
-TARGET_MAX_BYTES = int(3.8 * 1024 * 1024)  # stay under the 4MB cap after re-encode
+TARGET_MAX_BYTES = int(3.5 * 1024 * 1024)  # stay safely under the 4MB cap after re-encode
 OUT_WIDTH = 720
 OUT_HEIGHT = 1280
 
@@ -208,7 +208,7 @@ def process_to_portrait(download_url: str, duration: float, workdir: str):
         return None, 0
 
     size = os.path.getsize(out_path)
-    if size > TARGET_MAX_BYTES * 1.15:
+    if size > 4 * 1024 * 1024:
         return None, size
     return out_path, size
 
