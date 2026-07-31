@@ -18,49 +18,40 @@ MAX_FILE_SIZE_BYTES = 4 * 1024 * 1024  # 4MB cap
 TELEGRAM_BOT_TOKEN = os.environ["WOLF_BOT_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["WOLF_CHAT_ID"]
 PEXELS_API_KEY = os.environ["PEXELS_API_KEY"]
-PIXABAY_API_KEY = os.environ.get("PIXABAY_API_KEY")  # optional -- second source, adds itself once set
+PIXABAY_API_KEY = os.environ.get("PIXABAY_API_KEY")
 
+# tight to nature / adventure / canyoneering / rock-climbing / adrenaline moments only
 TOPIC_QUERIES = [
-    "canyoneering",
-    "cliff jumping",
-    "waterfall drone",
-    "mountain hiking drone",
-    "skydiving nature",
-    "base jumping cliff",
-    "paragliding mountains",
-    "surfing big waves",
-    "whitewater rafting",
-    "rock climbing action",
-    "wildlife action",
-    "lion hunting",
-    "eagle flying",
-    "avalanche",
-    "lightning storm nature",
-    "volcano eruption",
-    "northern lights timelapse",
-    "desert drone",
-    "snowboarding powder",
-    "freediving ocean",
-    "drone forest flight",
-    "wingsuit flying",
-    "shark ocean",
-    "storm chasing nature",
-    "downhill mountain bike forest",
-    "ice climbing",
-    "hot air balloon mountains",
-    "tornado nature",
-    "underwater cave diving",
-    "kitesurfing ocean",
-    "cave exploration",
-    "glacier drone",
-    "jungle waterfall",
-    "canyon river",
-    "safari animals action",
-    "mountain summit hiking",
-    "sea cliffs drone",
-    "trekking wilderness",
-    "coral reef diving",
-    "forest waterfall drone",
+    "canyoneering waterfall rappelling",
+    "cliff jumping ocean extreme",
+    "extreme rock climbing cliff",
+    "free solo climbing exposure",
+    "skydiving freefall extreme",
+    "base jumping cliff extreme",
+    "wingsuit flying close terrain",
+    "paragliding mountain extreme",
+    "big wave surfing wipeout",
+    "whitewater rafting rapids extreme",
+    "avalanche snow extreme",
+    "lightning storm dramatic",
+    "volcano eruption lava close",
+    "shark close encounter ocean",
+    "crocodile alligator wild action",
+    "bear wild encounter close",
+    "eagle hunting dive action",
+    "lion hunt chase wild",
+    "wingsuit proximity flying",
+    "ice climbing frozen waterfall",
+    "storm chasing tornado extreme",
+    "downhill mountain bike crash jump",
+    "freediving deep ocean extreme",
+    "cave diving underwater extreme",
+    "kitesurfing extreme jump",
+    "canyon extreme jump rope",
+    "mountain summit extreme exposure",
+    "extreme weather ocean storm",
+    "wild river extreme kayak",
+    "cliffside extreme sport action",
 ]
 
 
@@ -99,12 +90,18 @@ def normalize_pexels(v: dict, query: str):
     width = v.get("width") or 0
     height = v.get("height") or 0
     if width and height and width >= height:
-        return None  # not portrait
-    files = [
-        {"link": f["link"], "width": f.get("width", 0), "height": f.get("height", 0)}
-        for f in v.get("video_files", [])
-        if f.get("file_type") == "video/mp4" and (f.get("height") or 0) > (f.get("width") or 0)
-    ]
+        return None
+    files = []
+    for f in v.get("video_files", []):
+        if f.get("file_type") != "video/mp4":
+            continue
+        w, h = f.get("width", 0), f.get("height", 0)
+        if h <= w:
+            continue
+        link = f.get("link", "")
+        if not link or link.lower().split("?")[0].endswith(".gif"):
+            continue
+        files.append({"link": link, "width": w, "height": h})
     if not files:
         return None
     return {
@@ -155,7 +152,7 @@ def fetch_pexels_popular(page: int, count: int = 80):
     return out
 
 
-# ---------- Pixabay (optional second source) ----------
+# ---------- Pixabay ----------
 
 def normalize_pixabay(v: dict, query: str):
     duration = v.get("duration", 9999)
@@ -165,10 +162,10 @@ def normalize_pixabay(v: dict, query: str):
         if not f:
             continue
         w, h = f.get("width", 0), f.get("height", 0)
-        if not (h > w):  # keep portrait only
+        if not (h > w):
             continue
         link = f.get("url", "")
-        if not link or link.lower().endswith(".gif"):
+        if not link or link.lower().split("?")[0].endswith(".gif"):
             continue
         files.append({"link": link, "width": w, "height": h})
     if not files:
@@ -183,17 +180,16 @@ def normalize_pixabay(v: dict, query: str):
     }
 
 
-def fetch_pixabay_search(query: str, page: int, count: int = 50):
+def fetch_pixabay_search(query: str, page: int, count: int = 50, editors_choice: bool = False):
     if not PIXABAY_API_KEY:
         return []
-    resp = requests.get(
-        "https://pixabay.com/api/videos/",
-        params={
-            "key": PIXABAY_API_KEY, "q": query, "per_page": count, "page": page,
-            "video_type": "film", "safesearch": "true",
-        },
-        timeout=20,
-    )
+    params = {
+        "key": PIXABAY_API_KEY, "q": query, "per_page": count, "page": page,
+        "video_type": "film", "safesearch": "true", "order": "popular",
+    }
+    if editors_choice:
+        params["editors_choice"] = "true"
+    resp = requests.get("https://pixabay.com/api/videos/", params=params, timeout=20)
     resp.raise_for_status()
     out = []
     for v in resp.json().get("hits", []):
@@ -206,7 +202,6 @@ def fetch_pixabay_search(query: str, page: int, count: int = 50):
 
 
 def pick_best_file(files: list):
-    """files already portrait-only and non-gif; pick highest quality under the size cap."""
     ordered = sorted(files, key=lambda f: f["width"] * f["height"], reverse=True)
     for f in ordered:
         link = f["link"]
@@ -236,11 +231,17 @@ def build_caption(c: dict) -> str:
 
 
 def send_to_telegram(video_url: str, caption: str, width: int, height: int, duration: int) -> None:
+    # sendVideo (not sendAnimation): keeps it a normal, real video -- never labeled/saved as .gif
     resp = requests.post(
-        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendAnimation",
+        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVideo",
         data={
-            "chat_id": TELEGRAM_CHAT_ID, "animation": video_url, "caption": caption,
-            "width": width, "height": height, "duration": duration,
+            "chat_id": TELEGRAM_CHAT_ID,
+            "video": video_url,
+            "caption": caption,
+            "width": width,
+            "height": height,
+            "duration": duration,
+            "supports_streaming": True,
         },
         timeout=60,
     )
@@ -252,7 +253,6 @@ def main():
     seen_uids = set()
     all_candidates = []
 
-    # Pexels popular/trending
     for page in random.sample(range(1, 8), 2):
         try:
             batch = fetch_pexels_popular(page)
@@ -268,13 +268,29 @@ def main():
             new_count += 1
         print(f"pexels popular page {page}: {new_count} new / {len(batch)} fetched")
 
+    if PIXABAY_API_KEY:
+        for page in random.sample(range(1, 5), 2):
+            try:
+                batch = fetch_pixabay_search("nature adventure extreme", page, editors_choice=True)
+            except requests.HTTPError as e:
+                print(f"pixabay editors_choice page {page} failed: {e}", file=sys.stderr)
+                batch = []
+            new_count = 0
+            for c in batch:
+                if c["uid"] in sent_ids or c["uid"] in seen_uids:
+                    continue
+                seen_uids.add(c["uid"])
+                all_candidates.append(c)
+                new_count += 1
+            print(f"pixabay editors_choice page {page}: {new_count} new / {len(batch)} fetched")
+
     queries = TOPIC_QUERIES[:]
     random.shuffle(queries)
 
     for query in queries:
         if len(all_candidates) >= VIDEOS_PER_RUN * 4:
             break
-        page = random.randint(1, 5)
+        page = random.randint(1, 4)
         try:
             batch = fetch_pexels_search(query, page)
         except requests.HTTPError as e:
@@ -305,7 +321,7 @@ def main():
             print(f"pixabay '{query}': {new_count2} new / {len(pbatch)} fetched")
 
     if not PIXABAY_API_KEY:
-        print("PIXABAY_API_KEY not set -- running with Pexels only", file=sys.stderr)
+        print("PIXABAY_API_KEY not set", file=sys.stderr)
 
     print(f"total unique portrait candidates collected: {len(all_candidates)}")
     random.shuffle(all_candidates)
