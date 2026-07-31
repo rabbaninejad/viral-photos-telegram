@@ -9,64 +9,58 @@ import requests
 
 SENT_IDS_FILE = Path(__file__).parent / "sent_video_ids.json"
 MAX_HISTORY = 12000
-VIDEOS_PER_RUN = 18  # target well above the required minimum of 15
+VIDEOS_PER_RUN = 18
 SEND_DELAY_SECONDS = 1.5
 MAX_CAPTION_LEN = 1000
 MAX_DURATION_SECONDS = 30
-MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024  # Telegram's cap for sending by URL
+MAX_FILE_SIZE_BYTES = 4 * 1024 * 1024  # 4MB cap
 
 TELEGRAM_BOT_TOKEN = os.environ["WOLF_BOT_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["WOLF_CHAT_ID"]
 PEXELS_API_KEY = os.environ["PEXELS_API_KEY"]
 
+# nature / adventure / thrill only -- no cars, jets, urban stuff
 TOPIC_QUERIES = [
     "canyoneering",
-    "extreme sports action",
     "cliff jumping",
     "waterfall drone",
     "mountain hiking drone",
-    "skydiving",
-    "base jumping",
-    "paragliding",
+    "skydiving nature",
+    "base jumping cliff",
+    "paragliding mountains",
     "surfing big waves",
     "whitewater rafting",
     "rock climbing action",
-    "motorcycle stunt",
-    "supercar drifting",
-    "off road driving",
-    "fighter jet flying",
     "wildlife action",
     "lion hunting",
     "eagle flying",
     "avalanche",
-    "lightning storm",
+    "lightning storm nature",
     "volcano eruption",
     "northern lights timelapse",
     "desert drone",
     "snowboarding powder",
     "freediving ocean",
     "drone forest flight",
-    "fireworks night",
-    "space rocket launch",
-    "formula 1 racing",
     "wingsuit flying",
     "shark ocean",
-    "storm chasing",
-    "parkour freerunning",
-    "bmx tricks",
-    "drift racing",
-    "helicopter aerial",
-    "sailing storm",
-    "bull riding",
-    "downhill mountain bike",
+    "storm chasing nature",
+    "downhill mountain bike forest",
     "ice climbing",
-    "hot air balloon",
-    "tornado",
+    "hot air balloon mountains",
+    "tornado nature",
     "underwater cave diving",
-    "kitesurfing",
+    "kitesurfing ocean",
     "cave exploration",
-    "night city drone",
-    "roller coaster pov",
+    "glacier drone",
+    "jungle waterfall",
+    "canyon river",
+    "safari animals action",
+    "mountain summit hiking",
+    "sea cliffs drone",
+    "trekking wilderness",
+    "coral reef diving",
+    "forest waterfall drone",
 ]
 
 
@@ -98,8 +92,12 @@ def translate_to_fa(text: str) -> str:
         return ""
 
 
-def normalize_video(v: dict, query: str) -> dict:
+def normalize_video(v: dict, query: str):
     duration = v.get("duration", 9999)
+    width = v.get("width") or 0
+    height = v.get("height") or 0
+    if width and height and width >= height:
+        return None  # skip landscape originals -- we want story/portrait
     return {
         "uid": f"pexels:{v['id']}",
         "duration": duration,
@@ -116,6 +114,7 @@ def fetch_from_pexels_search(query: str, page: int, count: int = 80):
             "query": query,
             "per_page": count,
             "page": page,
+            "orientation": "portrait",
             "size": "medium",
             "max_duration": MAX_DURATION_SECONDS,
         },
@@ -128,15 +127,21 @@ def fetch_from_pexels_search(query: str, page: int, count: int = 80):
     for v in results:
         if v.get("duration", 9999) > MAX_DURATION_SECONDS:
             continue
-        out.append(normalize_video(v, query))
+        c = normalize_video(v, query)
+        if c:
+            out.append(c)
     return out
 
 
 def fetch_popular(page: int, count: int = 80):
-    """Pexels' own curated/trending pool -- closest free proxy for 'viral right now'."""
     resp = requests.get(
         "https://api.pexels.com/videos/popular",
-        params={"per_page": count, "page": page, "max_duration": MAX_DURATION_SECONDS},
+        params={
+            "per_page": count,
+            "page": page,
+            "orientation": "portrait",
+            "max_duration": MAX_DURATION_SECONDS,
+        },
         headers={"Authorization": PEXELS_API_KEY},
         timeout=20,
     )
@@ -146,16 +151,20 @@ def fetch_popular(page: int, count: int = 80):
     for v in results:
         if v.get("duration", 9999) > MAX_DURATION_SECONDS:
             continue
-        out.append(normalize_video(v, "پرطرفدار"))
+        c = normalize_video(v, "پرطرفدار")
+        if c:
+            out.append(c)
     return out
 
 
 def pick_best_file(video_files: list):
-    candidates = [f for f in video_files if f.get("file_type") == "video/mp4"]
+    """Prefer portrait files; pick highest quality that still fits under the size cap."""
+    candidates = [
+        f for f in video_files
+        if f.get("file_type") == "video/mp4" and (f.get("height") or 0) > (f.get("width") or 0)
+    ]
     candidates.sort(key=lambda f: (f.get("width") or 0) * (f.get("height") or 0), reverse=True)
-    preferred = [f for f in candidates if (f.get("width") or 0) <= 1280]
-    ordered = preferred + [f for f in candidates if f not in preferred]
-    for f in ordered:
+    for f in candidates:
         link = f.get("link")
         if not link:
             continue
@@ -205,7 +214,6 @@ def main():
     seen_uids = set()
     all_candidates = []
 
-    # 1) popular/trending pool first -- best proxy for "viral today"
     for page in random.sample(range(1, 8), 2):
         try:
             batch = fetch_popular(page)
@@ -221,11 +229,10 @@ def main():
             new_count += 1
         print(f"popular page {page}: {new_count} new / {len(batch)} fetched")
 
-    # 2) topical search pool to fill the rest and add variety
     queries = TOPIC_QUERIES[:]
     random.shuffle(queries)
     for query in queries:
-        if len(all_candidates) >= VIDEOS_PER_RUN * 3:
+        if len(all_candidates) >= VIDEOS_PER_RUN * 4:
             break
         page = random.randint(1, 5)
         try:
@@ -242,7 +249,7 @@ def main():
             new_count += 1
         print(f"'{query}' page {page}: {new_count} new / {len(batch)} fetched")
 
-    print(f"total unique candidates collected: {len(all_candidates)}")
+    print(f"total unique portrait candidates collected: {len(all_candidates)}")
     random.shuffle(all_candidates)
 
     sent_this_run = 0
