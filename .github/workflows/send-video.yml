@@ -24,6 +24,7 @@ jobs:
           WOLF_BOT_TOKEN: ${{ secrets.WOLF_BOT_TOKEN }}
           WOLF_CHAT_ID: ${{ secrets.WOLF_CHAT_ID }}
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
 
       - name: Commit updated history
         run: |
