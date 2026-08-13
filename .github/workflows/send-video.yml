@@ -34,5 +34,20 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           git add sent_video_ids.json
-          git diff --cached --quiet || git commit -m "update sent video history"
-          git push
+          if git diff --cached --quiet; then
+            echo "no changes to commit"
+            exit 0
+          fi
+          git commit -m "update sent video history"
+          for i in 1 2 3 4 5; do
+            if git push; then
+              echo "pushed successfully"
+              exit 0
+            fi
+            echo "push rejected, attempt $i - rebasing onto latest"
+            sleep $((RANDOM % 5 + 1))
+            git fetch origin main
+            git rebase origin/main
+          done
+          echo "failed to push after retries"
+          exit 1
