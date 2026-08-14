@@ -9,7 +9,7 @@ import requests
 
 SENT_IDS_FILE = Path(__file__).parent / "sent_ids.json"
 MAX_HISTORY = 8000  # how many past IDs to remember before trimming
-PHOTOS_PER_RUN = 5
+PHOTOS_PER_RUN = 100
 SEND_DELAY_SECONDS = 1.2  # spacing between sends to stay under Telegram's rate limit
 MAX_CAPTION_LEN = 1000  # Telegram's hard cap is 1024 chars
 
