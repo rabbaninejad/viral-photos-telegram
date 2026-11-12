@@ -1,0 +1,40 @@
+name: Verify Parvaz95 bot token
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Telegram bot identity without exposing token
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          python - <<'PY'
+          import os, requests, sys
+          token = os.environ.get("BOT_TOKEN", "")
+          if not token:
+              print("ERROR: TELEGRAM_BOT_TOKEN secret is empty or missing")
+              sys.exit(1)
+          r = requests.get(f"https://api.telegram.org/bot{token}/getMe", timeout=20)
+          try:
+              data = r.json()
+          except Exception:
+              print("ERROR: Telegram API returned non-JSON", r.status_code)
+              sys.exit(1)
+          if not data.get("ok"):
+              print("ERROR: Telegram API rejected the stored token")
+              sys.exit(1)
+          username = data["result"].get("username", "")
+          bot_id = data["result"].get("id", "")
+          print(f"BOT_USERNAME=@{username}")
+          print(f"BOT_ID={bot_id}")
+          if username.lower() == "parvaz95_bot":
+              print("RESULT=MATCH")
+          else:
+              print("RESULT=MISMATCH")
+          PY
