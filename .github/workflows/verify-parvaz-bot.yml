@@ -10,31 +10,25 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - name: Check Telegram bot identity without exposing token
+      - name: Check Telegram bot identities without exposing tokens
         env:
-          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          MAIN_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          VIDEO_BOT_TOKEN: ${{ secrets.WOLF_BOT_TOKEN }}
         run: |
           python - <<'PY'
-          import os, requests, sys
-          token = os.environ.get("BOT_TOKEN", "")
-          if not token:
-              print("ERROR: TELEGRAM_BOT_TOKEN secret is empty or missing")
-              sys.exit(1)
-          r = requests.get(f"https://api.telegram.org/bot{token}/getMe", timeout=20)
-          try:
-              data = r.json()
-          except Exception:
-              print("ERROR: Telegram API returned non-JSON", r.status_code)
-              sys.exit(1)
-          if not data.get("ok"):
-              print("ERROR: Telegram API rejected the stored token")
-              sys.exit(1)
-          username = data["result"].get("username", "")
-          bot_id = data["result"].get("id", "")
-          print(f"BOT_USERNAME=@{username}")
-          print(f"BOT_ID={bot_id}")
-          if username.lower() == "parvaz95_bot":
-              print("RESULT=MATCH")
-          else:
-              print("RESULT=MISMATCH")
+          import os, requests
+          for label, token in [("TELEGRAM_BOT_TOKEN", os.getenv("MAIN_BOT_TOKEN","")), ("WOLF_BOT_TOKEN", os.getenv("VIDEO_BOT_TOKEN",""))]:
+              if not token:
+                  print(f"{label}=MISSING")
+                  continue
+              try:
+                  j=requests.get(f"https://api.telegram.org/bot{token}/getMe",timeout=20).json()
+                  if j.get("ok"):
+                      u=j["result"].get("username","")
+                      print(f"{label}=@{u}")
+                      print(f"{label}_MATCH={'YES' if u.lower()=='parvaz95_bot' else 'NO'}")
+                  else:
+                      print(f"{label}=INVALID")
+              except Exception:
+                  print(f"{label}=ERROR")
           PY
